@@ -2,11 +2,11 @@ locals {
   keep_latest_5_images_rule = [
     {
       rulePriority = 1
-      description  = "Keep only the 5 most recent images"
+      description  = "Keep only the ${var.count_number} most recent images"
       selection = {
-        tagStatus   = "any"
-        countType   = "imageCountMoreThan"
-        countNumber = 5
+        tagStatus   = var.tag_status
+        countType   = var.count_type
+        countNumber = var.count_number
       }
       action = {
         type = "expire"
@@ -16,8 +16,7 @@ locals {
 }
 
 resource "aws_ecr_repository" "container_repo" {
-  name                 = "${var.name}-${terraform.workspace}"
-  #provider             = aws.euwest1
+  name                 = "${var.name}"
   image_tag_mutability = var.mutability
   image_scanning_configuration {
     scan_on_push = true
@@ -29,8 +28,7 @@ resource "aws_ecr_repository" "container_repo" {
 
   tags = merge(var.tags, {
     Name        = var.name
-    FullName    = "${var.name}-${terraform.workspace}"
-    Environment = "${terraform.workspace}"
+    FullName    = "${var.name}"
   })
 }
 
