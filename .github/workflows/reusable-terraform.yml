@@ -1,0 +1,66 @@
+name: Test Application CI/CD (Reusable)
+
+on: 
+    workflow_call:
+        inputs:
+            build-path: 
+                description: "The path to the build script"
+                required: true
+                type: string
+            docker-image-name:
+                description: "The Docker image to deploy. Format: <name>"
+                required: false
+                type: string
+                default: "${{ github.repository }}:${{ github.sha }}"
+            docker-build-args:
+                description: "Optional build arguments for the Docker build step. Format: --build-arg KEY=VALUE"
+                required: false
+                type: string
+            skip-test:
+                description: "Whether to skip the test step. Set to 'true' to skip tests."
+                required: false
+                type: boolean
+                default: false
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.repository }}-${{ github.ref }} # Group by branch or tag
+    cancel-in-progress: true # Cancel any in-progress runs in the same group                
+
+permissions: write-all
+
+env:
+    GITHUB_SHA: ${{ github.sha }}
+
+jobs:
+    test-application:
+        runs-on: [self-hosted, "ubuntu private"]
+        steps:
+            - uses: actions/checkout@v4
+            
+            - name: Configure AWS credentials
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+                aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+                aws-region: 'eu-north-1'
+
+            - name: Log in to Amazon ECR
+              id: login-ecr
+              uses: aws-actions/amazon-ecr-login@v2
+
+            # Reusable build and run steps can be added here, or you can call another reusable workflow for testing
+            # For example, you could call a reusable workflow that builds the Docker image and runs tests against it before deployment
+            - name: Build Docker image
+              run: docker build -t ${{ inputs.docker-image-name }} -f ${{ inputs.build-path }}/Dockerfile ${{ inputs.build-path }} ${{ inputs.docker-build-args }}
+
+            - name: Run tests
+              if: ${{ !inputs.skip-test }}
+              run: |
+                echo "Running tests for Docker image: ${{ inputs.docker-image-name }}"
+                # Example test command, replace with actual test commands
+                docker run --rm ${{ inputs.docker-image-name }} 
+
+            - name: Clean up
+              if: always()
+              run: sudo docker image prune -a -f && sudo docker system prune --force
+            
