@@ -65,19 +65,35 @@ resource "aws_iam_role_policy" "lambda_policy" {
   })
 }
 
+#####################################
+# Lambda Function
+#####################################
+
+data "archive_file" "notifications_placeholder" {
+  type        = "zip"
+  output_path = "${path.module}/placeholder-notifications.zip"
+  source {
+    content  = "exports.handler = async () => ({ statusCode: 200, body: 'placeholder' })"
+    filename = "index.js"
+  }
+}
+
 resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
   role       = aws_iam_role.lambda_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
 resource "aws_lambda_function" "lambda" {
-  function_name    = "${terraform.workspace}-minfaktura-${var.service_name}"
-  role             = aws_iam_role.lambda_role.arn
-  runtime          = var.lambda_runtime
+  function_name    = "${terraform.workspace}-${var.service_name}-lambda"
   handler          = var.lambda_handler
-  filename         = "${path.module}/../../../backend/services/${var.service_name}/dist.zip"
-  source_code_hash = filebase64sha256("${path.module}/../../../backend/services/${var.service_name}/dist.zip")
+  runtime          = var.lambda_runtime
+  architectures    = ["arm64"]
+  role             = aws_iam_role.lambda_role.arn
+  filename         = data.archive_file.notifications_placeholder.output_path
+  source_code_hash = data.archive_file.notifications_placeholder.output_base64sha256
+  publish          = true
   timeout          = var.lambda_timeout
+  memory_size      = 512
 
   environment {
     variables = var.env_variables
