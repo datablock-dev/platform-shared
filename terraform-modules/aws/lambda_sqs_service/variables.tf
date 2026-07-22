@@ -62,3 +62,21 @@ variable "queue_policy_statements" {
     Action    = list(string)
   }))
 }
+
+variable "lambda_function_name" {
+  description = "Override the Lambda function name. Defaults to '{workspace}-{service_name}-lambda'. Set this if a caller's CI/CD already targets a fixed function name."
+  default     = null
+  type        = string
+}
+
+variable "sqs_queue_name" {
+  description = "Override the SQS queue name. Defaults to '{workspace}-{service_name}-sqs-queue'."
+  default     = null
+  type        = string
+}
+
+variable "iam_role_name" {
+  description = "Override the Lambda IAM role name. Defaults to '{workspace}-{service_name}-lambda-role'."
+  default     = null
+  type        = string
+}

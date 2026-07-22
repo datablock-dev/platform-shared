@@ -1,9 +1,12 @@
 locals {
-  fifo_suffix = var.is_fifo ? ".fifo" : ""
+  fifo_suffix          = var.is_fifo ? ".fifo" : ""
+  sqs_queue_name       = coalesce(var.sqs_queue_name, "${terraform.workspace}-${var.service_name}-sqs-queue${local.fifo_suffix}")
+  iam_role_name        = coalesce(var.iam_role_name, "${terraform.workspace}-${var.service_name}-lambda-role")
+  lambda_function_name = coalesce(var.lambda_function_name, "${terraform.workspace}-${var.service_name}-lambda")
 }
 
 resource "aws_sqs_queue" "service_queue" {
-  name                        = "${terraform.workspace}-${var.service_name}-sqs-queue${local.fifo_suffix}"
+  name                        = local.sqs_queue_name
   delay_seconds               = 0
   fifo_queue                  = var.is_fifo
   content_based_deduplication = var.is_fifo
@@ -35,7 +38,7 @@ resource "aws_sqs_queue_policy" "service_queue_policy" {
 }
 
 resource "aws_iam_role" "lambda_role" {
-  name = "${terraform.workspace}-${var.service_name}-lambda-role"
+  name = local.iam_role_name
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
@@ -101,7 +104,7 @@ resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
 }
 
 resource "aws_lambda_function" "lambda" {
-  function_name    = "${terraform.workspace}-${var.service_name}-lambda"
+  function_name    = local.lambda_function_name
   handler          = var.lambda_handler
   runtime          = var.lambda_runtime
   architectures    = ["arm64"]
@@ -114,6 +117,12 @@ resource "aws_lambda_function" "lambda" {
 
   environment {
     variables = var.env_variables
+  }
+
+  # Real code is deployed out-of-band by CI (aws lambda update-function-code) after apply.
+  # Ignore drift on the placeholder zip so subsequent applies don't revert deployed code.
+  lifecycle {
+    ignore_changes = [filename, source_code_hash]
   }
 }
 
