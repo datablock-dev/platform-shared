@@ -232,6 +232,21 @@ module "worker" {
 | `lambda_runtime` | `string` | `"nodejs22.x"` | Lambda runtime |
 | `lambda_timeout` | `number` | `10` | Timeout in seconds |
 | `additional_iam_statements` | `list(object)` | `[]` | Extra IAM policy statements for the Lambda role |
+| `queue_policy_statements` | `list(object)` | `[]` | Extra resource-policy statements granting other IAM principals access to the queue |
+
+To let another service's role send messages to this queue, pass a
+`queue_policy_statements` entry — `Resource` is always the queue itself, so
+you only need `Effect`, `Principal`, and `Action`:
+
+```hcl
+queue_policy_statements = [
+  {
+    Effect    = "Allow"
+    Principal = { AWS = aws_iam_role.other_service.arn }
+    Action    = ["sqs:SendMessage"]
+  }
+]
+```
 
 **Outputs:** `lambda_function_arn`, `lambda_function_name`, `sqs_queue_url`, `sqs_queue_arn`
 

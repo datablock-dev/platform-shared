@@ -17,6 +17,23 @@ resource "aws_sqs_queue" "service_queue" {
   })
 }
 
+resource "aws_sqs_queue_policy" "service_queue_policy" {
+  count     = length(var.queue_policy_statements) > 0 ? 1 : 0
+  queue_url = aws_sqs_queue.service_queue.id
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      for stmt in var.queue_policy_statements : {
+        Effect    = stmt.Effect
+        Principal = stmt.Principal
+        Action    = stmt.Action
+        Resource  = aws_sqs_queue.service_queue.arn
+      }
+    ]
+  })
+}
+
 resource "aws_iam_role" "lambda_role" {
   name = "${terraform.workspace}-${var.service_name}-lambda-role"
 

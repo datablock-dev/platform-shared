@@ -52,3 +52,13 @@ variable "additional_iam_statements" {
     Resource = list(string)
   }))
 }
+
+variable "queue_policy_statements" {
+  description = "Additional resource-policy statements granting other IAM principals access to the SQS queue. Resource is always this queue, so only Effect, Principal, and Action need to be set."
+  default     = []
+  type = list(object({
+    Effect    = string
+    Principal = any
+    Action    = list(string)
+  }))
+}
