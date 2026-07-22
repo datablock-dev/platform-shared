@@ -197,9 +197,21 @@ module "api" {
 
 Lambda function triggered by SQS messages, with a dead-letter queue.
 
+All resources use the caller's default `aws` provider, so the queue and the
+Lambda always land in the same region. To deploy an instance of this module
+to a specific region, pass an aliased provider explicitly:
+
 ```hcl
+provider "aws" {
+  alias  = "useast1"
+  region = "us-east-1"
+}
+
 module "worker" {
   source = "github.com/datablock-dev/.github//terraform-modules/lambda_sqs_service?ref=main"
+  providers = {
+    aws = aws.useast1
+  }
 
   service_name          = "my-worker"   # required
   dead_letter_queue_arn = aws_sqs_queue.dlq.arn  # required
