@@ -208,7 +208,7 @@ provider "aws" {
 }
 
 module "worker" {
-  source = "github.com/datablock-dev/.github//terraform-modules/lambda_sqs_service?ref=main"
+  source = "github.com/datablock-dev/platform-shared//terraform-modules/aws/lambda_sqs_service?ref=main"
   providers = {
     aws = aws.useast1
   }
@@ -233,6 +233,15 @@ module "worker" {
 | `lambda_timeout` | `number` | `10` | Timeout in seconds |
 | `additional_iam_statements` | `list(object)` | `[]` | Extra IAM policy statements for the Lambda role |
 | `queue_policy_statements` | `list(object)` | `[]` | Extra resource-policy statements granting other IAM principals access to the queue |
+| `lambda_function_name` | `string` | `null` | Override the Lambda function name (defaults to `{workspace}-{service_name}-lambda`) — set this if a caller's CI/CD targets a fixed function name |
+| `sqs_queue_name` | `string` | `null` | Override the SQS queue name (defaults to `{workspace}-{service_name}-sqs-queue`) |
+| `iam_role_name` | `string` | `null` | Override the Lambda IAM role name (defaults to `{workspace}-{service_name}-lambda-role`) |
+
+The Lambda is deployed with a placeholder zip; real code is expected to be
+pushed out-of-band (e.g. `aws lambda update-function-code` from CI) after
+apply. The `filename`/`source_code_hash` drift this creates is deliberately
+ignored via `lifecycle.ignore_changes`, so subsequent applies won't revert
+deployed code back to the placeholder.
 
 To let another service's role send messages to this queue, pass a
 `queue_policy_statements` entry — `Resource` is always the queue itself, so
