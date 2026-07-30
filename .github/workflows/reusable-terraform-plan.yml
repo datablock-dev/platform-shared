@@ -1,0 +1,129 @@
+name: Terraform Plan (Reusable)
+
+# Thin wrapper around .github/actions/terraform-plan for repositories that want
+# the whole job handed to them. If you need to run extra steps before or after
+# the Terraform run, call the action directly instead.
+#
+# The caller keeps ownership of the trigger, the job-level `if`, and the
+# `permissions` block: a called workflow can only narrow the permissions the
+# caller granted, never widen them. See README.md for a call example.
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "Directory containing the Terraform root module."
+        required: false
+        type: string
+        default: terraform
+      runs-on:
+        description: "Runner label for the plan job."
+        required: false
+        type: string
+        default: arc-runner-set
+      terraform-version:
+        description: "Terraform version to install. Defaults to the latest release."
+        required: false
+        type: string
+        default: latest
+      workspace:
+        description: "Terraform workspace to select (created if missing). Empty to stay on the default workspace."
+        required: false
+        type: string
+        default: production
+      workload-identity-provider:
+        description: "Full resource name of the GCP workload identity provider. Empty skips GCP auth."
+        required: false
+        type: string
+        default: ""
+      service-account:
+        description: "GCP service account to impersonate. Required when workload-identity-provider is set."
+        required: false
+        type: string
+        default: ""
+      setup-gcloud:
+        description: "Install the gcloud CLI after authenticating to GCP."
+        required: false
+        type: boolean
+        default: true
+      plan-args:
+        description: "Extra arguments appended to `terraform plan`, e.g. `-var-file=prod.tfvars`."
+        required: false
+        type: string
+        default: ""
+      comment-on-pr:
+        description: "Post the plan results as a PR comment. Ignored outside pull_request events."
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      gh-app-id:
+        description: "Client ID of the GitHub App used to check out private Terraform modules."
+        required: true
+      gh-app-private-key:
+        description: "Private key of the GitHub App used to check out private Terraform modules."
+        required: true
+      tf-vars:
+        description: |
+          Newline-separated KEY=VALUE pairs exported into the job environment,
+          typically TF_VAR_* inputs and cloud credentials. Every value is masked
+          in the logs. Values may not contain newlines.
+        required: false
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - uses: actions/create-github-app-token@v3.2.0
+        id: app-token
+        with:
+          client-id: ${{ secrets.gh-app-id }}
+          private-key: ${{ secrets.gh-app-private-key }}
+          owner: ${{ github.repository_owner }}
+
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
+
+      # Exported before the action runs so TF_VAR_* values are visible to
+      # init, validate and plan alike.
+      - name: Export caller-provided variables
+        env:
+          TF_VARS: ${{ secrets.tf-vars }}
+        run: |
+          [ -z "$TF_VARS" ] && exit 0
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            case "$line" in \#*) continue ;; esac
+            key=${line%%=*}
+            value=${line#*=}
+            if [ "$key" = "$line" ]; then
+              echo "Ignoring malformed tf-vars entry (expected KEY=VALUE)."
+              continue
+            fi
+            echo "::add-mask::$value"
+            echo "$key=$value" >> "$GITHUB_ENV"
+          done <<< "$TF_VARS"
+
+      - uses: google-github-actions/auth@v3
+        if: ${{ inputs.workload-identity-provider != '' }}
+        with:
+          workload_identity_provider: ${{ inputs.workload-identity-provider }}
+          service_account: ${{ inputs.service-account }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+        if: ${{ inputs.workload-identity-provider != '' && inputs.setup-gcloud }}
+
+      # Referenced by full path rather than `./`: inside a reusable workflow a
+      # relative `uses:` resolves against the *caller's* checkout, not this repo.
+      # Keep this ref in step with the ref callers pin the workflow to.
+      - uses: datablock-dev/platform-shared/.github/actions/terraform-plan@main
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          workspace: ${{ inputs.workspace }}
+          terraform-version: ${{ inputs.terraform-version }}
+          github-token: ${{ steps.app-token.outputs.token }}
+          plan-args: ${{ inputs.plan-args }}
+          comment-on-pr: ${{ inputs.comment-on-pr }}
