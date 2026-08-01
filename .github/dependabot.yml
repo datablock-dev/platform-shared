@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # 1. Updates GitHub Actions used inside your custom actions (.github/actions)
+  # and workflow files (.github/workflows)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # 2. Updates Terraform providers and modules
+  - package-ecosystem: "terraform"
+    directory: "/terraform-modules"
+    schedule:
+      interval: "weekly"
