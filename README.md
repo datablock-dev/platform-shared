@@ -4,16 +4,16 @@ Shared Terraform modules, GitHub Actions workflows, Helm charts, and Kubernetes 
 
 ## Terraform actions
 
-The repository provides two cloud-authentication-agnostic composite actions:
+The repository provides two reusable composite actions:
 
 - `.github/actions/terraform-plan` runs `fmt`, `init`, `validate`, and `plan`, then posts or updates a pull request comment.
 - `.github/actions/terraform-apply` optionally removes or imports state during manually dispatched workflows, creates a saved plan, and applies it.
 
-The caller owns checkout and cloud authentication. Credentials exported by preceding steps in the same job—including AWS credentials and Google Application Default Credentials—are inherited by Terraform inside the composite action. This allows each repository to authenticate only to the providers it uses.
+Callers can provide `app-id` and `app-private-key` to let the action create a token and check out the repository, or perform checkout themselves and pass `app-token`. Both actions can optionally perform the standard two-stage AWS role assumption when `aws-oidc-role-arn` and `aws-account-id` are provided. If either input is empty, both AWS steps are skipped. Credentials exported by preceding authentication steps, including Google Application Default Credentials, are inherited by Terraform.
 
 ### Terraform Plan
 
-The following example authenticates to both AWS and Google before running Terraform:
+The following example authenticates to Google before the action and lets the action authenticate to AWS:
 
 ```yaml
 name: Terraform Plan
@@ -29,34 +29,13 @@ jobs:
       id-token: write
       pull-requests: write
     steps:
-      - name: Create GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v3.2.0
-        with:
-          client-id: ${{ secrets.GH_APP_ID }}
-          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-
+      # Google authentication creates its credentials file in the workspace,
+      # so check out once before authenticating. The action's App-token
+      # checkout uses clean: false and preserves this file.
       - name: Check out repository
         uses: actions/checkout@v7
         with:
-          token: ${{ steps.app-token.outputs.token }}
           persist-credentials: false
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v6.2.3
-        with:
-          role-to-assume: ${{ vars.OIDC_ROLE_ARN }}
-          aws-region: eu-north-1
-          role-session-name: GitHubActions-${{ github.run_id }}
-
-      - name: Assume target AWS account role
-        uses: aws-actions/configure-aws-credentials@v6.2.3
-        with:
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/OrganizationAccountAccessRole
-          aws-region: eu-north-1
-          role-chaining: true
-          role-skip-session-tagging: true
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
@@ -68,16 +47,19 @@ jobs:
         uses: datablock-dev/platform-shared/.github/actions/terraform-plan@main
         with:
           environment: staging
-          app-token: ${{ steps.app-token.outputs.token }}
+          aws-oidc-role-arn: ${{ vars.OIDC_ROLE_ARN }}
+          aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
+          app-id: ${{ secrets.GH_APP_ID }}
+          app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 ```
 
-The action expects `backend-<environment>.hcl` in the working directory and selects or creates a Terraform workspace with the same environment name. Its defaults are Terraform `1.10.4` and the `terraform` working directory.
+When `app-id` and `app-private-key` are provided together, the action creates a GitHub App token and checks out the repository with `clean: false`. Existing callers can instead perform checkout themselves and pass `app-token`. The action expects `backend-<environment>.hcl` in the working directory and selects or creates a Terraform workspace with the same environment name. Its defaults are Terraform `1.10.4` and the `terraform` working directory.
 
-The plan action exposes `fmt-outcome`, `init-outcome`, `validate-outcome`, `plan-outcome`, and `plan-stdout`. It reports all Terraform outcomes in one comment before failing if any required step failed or was skipped. The GitHub App must be able to read any private module repositories and write pull request comments.
+The plan action exposes `fmt-outcome`, `init-outcome`, `validate-outcome`, `plan-outcome`, and `plan-stdout`. It reports all Terraform outcomes in one comment before failing if any required step failed or was skipped. Set `summary: "false"` to disable the comment. The GitHub App must be able to read any private module repositories and write pull request comments.
 
 ### Terraform Apply
 
-Apply uses the same caller-owned checkout and authentication pattern:
+Apply uses the same caller-owned checkout and optional AWS authentication pattern:
 
 ```yaml
 name: Terraform Apply
@@ -109,28 +91,14 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - name: Create GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v3.2.0
-        with:
-          client-id: ${{ secrets.GH_APP_ID }}
-          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-
-      - name: Check out repository
-        uses: actions/checkout@v7
-        with:
-          token: ${{ steps.app-token.outputs.token }}
-          persist-credentials: false
-
-      # Add the AWS, Google, or other provider authentication required by this
-      # repository before calling the composite action.
-
       - name: Terraform apply
         uses: datablock-dev/platform-shared/.github/actions/terraform-apply@main
         with:
           environment: ${{ inputs.environment }}
-          app-token: ${{ steps.app-token.outputs.token }}
+          aws-oidc-role-arn: ${{ vars.OIDC_ROLE_ARN }}
+          aws-account-id: ${{ vars.AWS_ACCOUNT_ID }}
+          app-id: ${{ secrets.GH_APP_ID }}
+          app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
           state-remove: ${{ inputs.state-remove }}
           state-import: ${{ inputs.state-import }}
 ```
