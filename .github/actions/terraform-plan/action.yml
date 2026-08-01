@@ -239,6 +239,7 @@ runs:
       if: ${{ always() && inputs.summary == 'true' && github.event_name == 'pull_request' }}
       uses: datablock-dev/platform-shared/.github/actions/terraform-pr-summary@main
       with:
+        environment: ${{ inputs.environment }}
         fmt-outcome: ${{ steps.fmt.outputs.outcome }}
         init-outcome: ${{ steps.init.outputs.outcome }}
         validate-outcome: ${{ steps.validate.outputs.outcome }}
