@@ -1,0 +1,273 @@
+name: Terraform Plan
+description: >-
+  Runs terraform fmt / init / validate / plan and posts the results as a single,
+  continuously-updated pull request comment.
+
+# The caller owns everything that comes before this action: checking out the
+# repository, authenticating to cloud providers, and exporting TF_VAR_* values.
+# This action only covers the Terraform run itself.
+
+inputs:
+  working-directory:
+    description: "Directory containing the Terraform root module."
+    required: false
+    default: terraform
+  workspace:
+    description: "Terraform workspace to select (created if missing). Empty stays on the default workspace."
+    required: false
+    default: production
+  setup-terraform:
+    description: "Install Terraform. Set to 'false' if the job already ran hashicorp/setup-terraform."
+    required: false
+    default: "true"
+  terraform-version:
+    description: "Terraform version to install. Ignored when setup-terraform is 'false'."
+    required: false
+    default: latest
+  github-token:
+    description: >-
+      Token used for private Terraform module sources, TF_VAR_github_token, and
+      the PR comment. Defaults to the job's GITHUB_TOKEN, which cannot read other
+      private repositories — pass a GitHub App token if modules live elsewhere.
+    required: false
+    default: ${{ github.token }}
+  configure-git-credentials:
+    description: "Rewrite github.com URLs to use github-token so Terraform can fetch private module sources."
+    required: false
+    default: "true"
+  plan-args:
+    description: "Extra arguments appended to `terraform plan`, e.g. `-var-file=prod.tfvars`."
+    required: false
+    default: ""
+  comment-on-pr:
+    description: "Post the results comment. Ignored outside pull_request events."
+    required: false
+    default: "true"
+  fail-on-error:
+    description: "Fail the step if fmt, validate or plan failed. Set to 'false' to inspect the outputs instead."
+    required: false
+    default: "true"
+
+outputs:
+  fmt-outcome:
+    description: "success or failure."
+    value: ${{ steps.fmt.outputs.outcome }}
+  init-outcome:
+    description: "success or failure."
+    value: ${{ steps.init.outputs.outcome }}
+  validate-outcome:
+    description: "success or failure."
+    value: ${{ steps.validate.outputs.outcome }}
+  plan-outcome:
+    description: "success or failure."
+    value: ${{ steps.plan.outputs.outcome }}
+  plan-stdout:
+    description: "Combined stdout/stderr of `terraform plan`."
+    value: ${{ steps.plan.outputs.stdout }}
+
+runs:
+  using: composite
+  steps:
+    # Terraform shells out to git for module sources, so the token has to be
+    # injected through git config rather than the checkout credentials.
+    - name: Configure git credentials for Terraform modules
+      if: ${{ inputs.configure-git-credentials == 'true' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        GITCONFIG=$(mktemp)
+        echo "GIT_CONFIG_GLOBAL=$GITCONFIG" >> "$GITHUB_ENV"
+        git config --file "$GITCONFIG" \
+          url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf \
+          "https://github.com/"
+
+    - uses: hashicorp/setup-terraform@v4
+      if: ${{ inputs.setup-terraform == 'true' }}
+      with:
+        terraform_version: ${{ inputs.terraform-version }}
+
+    # Composite action steps do not support continue-on-error, so each Terraform
+    # step records its own outcome and always exits 0. The gate at the end of the
+    # action turns those outcomes back into a step failure.
+    - name: Terraform fmt
+      id: fmt
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        if terraform fmt -check; then
+          echo "outcome=success" >> "$GITHUB_OUTPUT"
+        else
+          echo "outcome=failure" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Terraform init
+      id: init
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        TF_VAR_github_token: ${{ inputs.github-token }}
+      run: |
+        if terraform init -input=false -reconfigure; then
+          echo "outcome=success" >> "$GITHUB_OUTPUT"
+        else
+          echo "outcome=failure" >> "$GITHUB_OUTPUT"
+          exit 1
+        fi
+
+    - name: Terraform workspace
+      if: ${{ inputs.workspace != '' }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        WORKSPACE: ${{ inputs.workspace }}
+      run: terraform workspace select "$WORKSPACE" || terraform workspace new "$WORKSPACE"
+
+    - name: Terraform validate
+      id: validate
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        out="$RUNNER_TEMP/tf-validate.txt"
+        if terraform validate -no-color > "$out" 2>&1; then
+          echo "outcome=success" >> "$GITHUB_OUTPUT"
+        else
+          echo "outcome=failure" >> "$GITHUB_OUTPUT"
+        fi
+        cat "$out"
+        delim="EOF_$(openssl rand -hex 8)"
+        { echo "stdout<<$delim"; cat "$out"; echo "$delim"; } >> "$GITHUB_OUTPUT"
+
+    - name: Terraform plan
+      id: plan
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        TF_VAR_github_token: ${{ inputs.github-token }}
+        PLAN_ARGS: ${{ inputs.plan-args }}
+      run: |
+        out="$RUNNER_TEMP/tf-plan.txt"
+        # shellcheck disable=SC2086 # PLAN_ARGS is a caller-supplied argument list.
+        if terraform plan -input=false -no-color $PLAN_ARGS > "$out" 2>&1; then
+          echo "outcome=success" >> "$GITHUB_OUTPUT"
+        else
+          echo "outcome=failure" >> "$GITHUB_OUTPUT"
+        fi
+        cat "$out"
+        delim="EOF_$(openssl rand -hex 8)"
+        { echo "stdout<<$delim"; cat "$out"; echo "$delim"; } >> "$GITHUB_OUTPUT"
+
+    - name: Comment plan on PR
+      uses: actions/github-script@v7
+      if: ${{ always() && inputs.comment-on-pr == 'true' && github.event_name == 'pull_request' }}
+      env:
+        FMT_OUTCOME: ${{ steps.fmt.outputs.outcome }}
+        INIT_OUTCOME: ${{ steps.init.outputs.outcome }}
+        VALIDATE_OUTCOME: ${{ steps.validate.outputs.outcome }}
+        VALIDATE_STDOUT: ${{ steps.validate.outputs.stdout }}
+        PLAN_OUTCOME: ${{ steps.plan.outputs.outcome }}
+        PLAN_STDOUT: ${{ steps.plan.outputs.stdout }}
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const workdir = process.env.WORKING_DIRECTORY;
+          const marker = `<!-- terraform-ci-results:${workdir} -->`;
+          const maxLen = 65536;
+
+          const fmtOutcome = process.env.FMT_OUTCOME || 'skipped';
+          const initOutcome = process.env.INIT_OUTCOME || 'skipped';
+          const validateOutcome = process.env.VALIDATE_OUTCOME || 'skipped';
+          const validateStdout = process.env.VALIDATE_STDOUT || '(no output)';
+          const planOutcome = process.env.PLAN_OUTCOME || 'skipped';
+
+          const icon = (o) =>
+            o === 'success' ? '✅' : o === 'failure' ? '❌' : o === 'skipped' ? '⏭️' : '⚠️';
+
+          function buildBody(plan) {
+            return [
+              marker,
+              `## Terraform CI results (\`${workdir}\`)`,
+              '',
+              '| Step | Outcome |',
+              '| --- | --- |',
+              `| Terraform fmt | ${icon(fmtOutcome)} \`${fmtOutcome}\` |`,
+              `| Terraform init | ${icon(initOutcome)} \`${initOutcome}\` |`,
+              `| Terraform validate | ${icon(validateOutcome)} \`${validateOutcome}\` |`,
+              `| Terraform plan | ${icon(planOutcome)} \`${planOutcome}\` |`,
+              '',
+              '<details><summary>Validate output</summary>',
+              '',
+              '```',
+              validateStdout,
+              '```',
+              '',
+              '</details>',
+              '',
+              '<details><summary>Show Plan</summary>',
+              '',
+              '```',
+              plan,
+              '```',
+              '',
+              '</details>',
+              '',
+              `*Workflow: \`${context.workflow}\`, Run: [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})*`,
+            ].join('\n');
+          }
+
+          let planStdout = process.env.PLAN_STDOUT || '(no output)';
+          let body = buildBody(planStdout);
+
+          if (body.length > maxLen) {
+            const notice = '\n\n... (plan output truncated to fit comment size limit) ...\n\n';
+            const overhead = body.length - planStdout.length;
+            const budget = Math.max(0, maxLen - overhead - notice.length - 100);
+            planStdout = notice + planStdout.slice(-budget);
+            body = buildBody(planStdout);
+            if (body.length > maxLen) {
+              body = body.slice(0, maxLen - 20) + '\n...(truncated)';
+            }
+          }
+
+          const comments = await github.paginate(github.rest.issues.listComments, {
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+            per_page: 100,
+          });
+          const existing = comments.find((c) => c.body && c.body.includes(marker));
+
+          if (existing) {
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: existing.id,
+              body,
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+          }
+
+    - name: Fail if fmt, validate, or plan failed
+      if: ${{ always() && inputs.fail-on-error == 'true' }}
+      shell: bash
+      env:
+        FMT_OUTCOME: ${{ steps.fmt.outputs.outcome }}
+        VALIDATE_OUTCOME: ${{ steps.validate.outputs.outcome }}
+        PLAN_OUTCOME: ${{ steps.plan.outputs.outcome }}
+      run: |
+        failed=""
+        if [ "$FMT_OUTCOME" = "failure" ]; then failed="$failed fmt"; fi
+        if [ "$VALIDATE_OUTCOME" = "failure" ]; then failed="$failed validate"; fi
+        if [ "$PLAN_OUTCOME" = "failure" ]; then failed="$failed plan"; fi
+        if [ -n "$failed" ]; then
+          echo "The following Terraform step(s) failed:$failed"
+          exit 1
+        fi
+        echo "fmt, validate, and plan all succeeded (or were skipped)."

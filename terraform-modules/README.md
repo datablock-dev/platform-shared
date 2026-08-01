@@ -139,28 +139,67 @@ module "iam_user" {
 
 ---
 
-### `github_oicd`
+### `aws_github_oidc`
 
 IAM role for GitHub Actions OIDC authentication — enables keyless AWS access from CI.
 
 ```hcl
 module "github_oidc" {
-  source = "github.com/datablock-dev/.github//terraform-modules/github_oicd?ref=main"
+  source = "github.com/datablock-dev/platform-shared//terraform-modules/aws/aws_github_oidc?ref=main"
 
-  repository       = "datablock-dev/my-repo"   # required
-  project_name     = "my-project"              # required
+  repository        = "datablock-dev/my-repo"  # required
+  project_name      = "my-project"             # required
   oidc_provider_arn = aws_iam_openid_connect_provider.github.arn  # required
 }
 ```
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
-| `repository` | `string` | — | GitHub repository (e.g. `datablock-dev/my-repo`) |
+| `repository` | `string` | — | GitHub repository, owner included (e.g. `datablock-dev/my-repo`) |
 | `project_name` | `string` | — | Project name used to build unique resource names |
 | `oidc_provider_arn` | `string` | — | ARN of the GitHub OIDC provider in AWS |
-| `policy` | `list(string)` | `[]` | Additional IAM policy document ARNs to attach |
+| `policy` | `list(string)` | `[]` | Extra IAM actions appended to the ECR policy |
+| `immutable_subject` | `bool` | `false` | Match the ID-based subject claim GitHub issues for renamed repositories |
+| `owner_id` | `number` | `null` | Numeric ID of the GitHub owner. Required when `immutable_subject` is true |
+| `terraform_state_bucket` | `string` | `""` | S3 bucket holding Terraform state. Empty skips the state policy entirely |
+| `terraform_lock_table` | `string` | `""` | DynamoDB lock table. Empty grants no DynamoDB access |
 
-**Outputs:** `datablock_github_oidc_role_arn`
+**Outputs:** `role_arn`, `role_name`, `subject_claim`
+
+> Requires the `integrations/github` Terraform provider when `immutable_subject` is set.
+
+#### Renamed repositories
+
+GitHub **permanently** switches a repository to immutable subject claims once it
+has been renamed or transferred. Its tokens then carry numeric IDs:
+
+```
+repo:<owner>@<owner_id>/<repo>@<repo_id>:<context>
+```
+
+A trust policy matching the plain `repo:<owner>/<repo>:*` stops matching
+entirely, and every login fails with `Not authorized to perform
+sts:AssumeRoleWithWebIdentity`. Renaming the repository in Terraform does not
+fix this on its own — the *format* changed, not just the name.
+
+Check which form a repository uses, and find the owner ID:
+
+```bash
+gh api repos/<owner>/<repo>/actions/oidc/customization/sub   # look at sub_claim_prefix
+gh api orgs/<owner> --jq .id
+```
+
+```hcl
+module "github_oidc" {
+  # ...
+  immutable_subject = true
+  owner_id          = 164868608
+}
+```
+
+The module matches one subject form, never both. Accepting the plain name as a
+fallback would let a repository created later under the freed-up old name
+inherit this role's trust, which is exactly what immutable claims prevent.
 
 ---
 
