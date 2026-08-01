@@ -5,9 +5,26 @@ inputs:
   environment:
     description: Target environment and Terraform workspace (for example, staging or production).
     required: true
+  aws-oidc-role-arn:
+    description: AWS OIDC role ARN. AWS authentication is skipped unless this and aws-account-id are set.
+    required: false
+    default: ""
+  aws-account-id:
+    description: Target AWS account ID. AWS authentication is skipped unless this and aws-oidc-role-arn are set.
+    required: false
+    default: ""
   app-token:
-    description: GitHub App token for private module access.
-    required: true
+    description: Existing token for private modules when App credentials are not provided.
+    required: false
+    default: ${{ github.token }}
+  app-id:
+    description: GitHub App client ID. Must be provided with app-private-key to create a token and check out the repository.
+    required: false
+    default: ""
+  app-private-key:
+    description: GitHub App private key. Must be provided with app-id to create a token and check out the repository.
+    required: false
+    default: ""
   state-remove:
     description: Space-separated resource addresses to remove from Terraform state.
     required: false
@@ -28,6 +45,45 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Validate GitHub App inputs
+      if: ${{ (inputs.app-id == '' && inputs.app-private-key != '') || (inputs.app-id != '' && inputs.app-private-key == '') }}
+      shell: bash
+      run: |
+        echo "app-id and app-private-key must be provided together."
+        exit 1
+
+    - uses: actions/create-github-app-token@v3.2.0
+      id: app-token
+      if: ${{ inputs.app-id != '' && inputs.app-private-key != '' }}
+      with:
+        client-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.app-private-key }}
+        owner: ${{ github.repository_owner }}
+
+    - uses: actions/checkout@v7
+      if: ${{ inputs.app-id != '' && inputs.app-private-key != '' }}
+      with:
+        token: ${{ steps.app-token.outputs.token }}
+        persist-credentials: false
+        clean: false
+
+    - name: Configure AWS credentials
+      if: ${{ inputs.aws-oidc-role-arn != '' && inputs.aws-account-id != '' }}
+      uses: aws-actions/configure-aws-credentials@v6.2.3
+      with:
+        role-to-assume: ${{ inputs.aws-oidc-role-arn }}
+        aws-region: eu-north-1
+        role-session-name: GitHubActions-${{ github.run_id }}
+
+    - name: Assume target AWS account role
+      if: ${{ inputs.aws-oidc-role-arn != '' && inputs.aws-account-id != '' }}
+      uses: aws-actions/configure-aws-credentials@v6.2.3
+      with:
+        role-to-assume: arn:aws:iam::${{ inputs.aws-account-id }}:role/OrganizationAccountAccessRole
+        aws-region: eu-north-1
+        role-chaining: true
+        role-skip-session-tagging: true
+
     - name: Set up Terraform
       uses: hashicorp/setup-terraform@v4
       with:
@@ -48,7 +104,7 @@ runs:
     - name: Configure git credentials for private Terraform modules
       shell: bash
       env:
-        APP_TOKEN: ${{ inputs.app-token }}
+        APP_TOKEN: ${{ steps.app-token.outputs.token || inputs.app-token }}
       run: |
         git_config=$(mktemp)
         echo "GIT_CONFIG_GLOBAL=$git_config" >> "$GITHUB_ENV"
@@ -76,7 +132,7 @@ runs:
       working-directory: ${{ inputs.working-directory }}
       env:
         ENVIRONMENT: ${{ inputs.environment }}
-        TF_VAR_github_token: ${{ inputs.app-token }}
+        TF_VAR_github_token: ${{ steps.app-token.outputs.token || inputs.app-token }}
       run: |
         terraform init -input=false -reconfigure -backend-config="backend-${ENVIRONMENT}.hcl"
         terraform workspace select "$ENVIRONMENT" || terraform workspace new "$ENVIRONMENT"
@@ -104,7 +160,7 @@ runs:
       working-directory: ${{ inputs.working-directory }}
       env:
         STATE_IMPORT: ${{ inputs.state-import }}
-        TF_VAR_github_token: ${{ inputs.app-token }}
+        TF_VAR_github_token: ${{ steps.app-token.outputs.token || inputs.app-token }}
       run: |
         while IFS= read -r pair; do
           [ -z "$pair" ] && continue
@@ -121,12 +177,12 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
-        TF_VAR_github_token: ${{ inputs.app-token }}
+        TF_VAR_github_token: ${{ steps.app-token.outputs.token || inputs.app-token }}
       run: terraform plan -input=false -out=tfplan
 
     - name: Terraform apply
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
-        TF_VAR_github_token: ${{ inputs.app-token }}
+        TF_VAR_github_token: ${{ steps.app-token.outputs.token || inputs.app-token }}
       run: terraform apply -input=false -auto-approve tfplan
