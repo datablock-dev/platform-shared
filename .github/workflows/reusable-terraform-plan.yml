@@ -1,73 +1,40 @@
-name: Terraform Plan (Reusable)
-
-# Thin wrapper around .github/actions/terraform-plan for repositories that want
-# the whole job handed to them. If you need to run extra steps before or after
-# the Terraform run, call the action directly instead.
-#
-# The caller keeps ownership of the trigger, the job-level `if`, and the
-# `permissions` block: a called workflow can only narrow the permissions the
-# caller granted, never widen them. See README.md for a call example.
+name: Terraform Plan AWS (Reusable)
 
 on:
   workflow_call:
     inputs:
+      environment:
+        description: Target environment and Terraform workspace.
+        required: true
+        type: string
+      aws-account-id:
+        description: Target AWS account ID.
+        required: true
+        type: string
       working-directory:
-        description: "Directory containing the Terraform root module."
+        description: Directory containing the Terraform root module.
         required: false
         type: string
         default: terraform
       runs-on:
-        description: "Runner label for the plan job."
+        description: Runner label for the plan job.
         required: false
         type: string
         default: arc-runner-set
       terraform-version:
-        description: "Terraform version to install. Defaults to the latest release."
+        description: Terraform CLI version.
         required: false
         type: string
-        default: latest
-      workspace:
-        description: "Terraform workspace to select (created if missing). Empty to stay on the default workspace."
-        required: false
-        type: string
-        default: production
-      workload-identity-provider:
-        description: "Full resource name of the GCP workload identity provider. Empty skips GCP auth."
-        required: false
-        type: string
-        default: ""
-      service-account:
-        description: "GCP service account to impersonate. Required when workload-identity-provider is set."
-        required: false
-        type: string
-        default: ""
-      setup-gcloud:
-        description: "Install the gcloud CLI after authenticating to GCP."
-        required: false
-        type: boolean
-        default: true
-      plan-args:
-        description: "Extra arguments appended to `terraform plan`, e.g. `-var-file=prod.tfvars`."
-        required: false
-        type: string
-        default: ""
-      comment-on-pr:
-        description: "Post the plan results as a PR comment. Ignored outside pull_request events."
-        required: false
-        type: boolean
-        default: true
+        default: 1.10.4
     secrets:
       gh-app-id:
-        description: "Client ID of the GitHub App used to check out private Terraform modules."
+        description: Client ID of the GitHub App used for checkout and private Terraform modules.
         required: true
       gh-app-private-key:
-        description: "Private key of the GitHub App used to check out private Terraform modules."
+        description: Private key of the GitHub App used for checkout and private Terraform modules.
         required: true
       tf-vars:
-        description: |
-          Newline-separated KEY=VALUE pairs exported into the job environment,
-          typically TF_VAR_* inputs and cloud credentials. Every value is masked
-          in the logs. Values may not contain newlines.
+        description: Newline-separated KEY=VALUE pairs to export before Terraform runs.
         required: false
 
 jobs:
@@ -75,21 +42,22 @@ jobs:
     name: Plan
     runs-on: ${{ inputs.runs-on }}
     steps:
-      - uses: actions/create-github-app-token@v3.2.0
+      - name: Create GitHub App token
         id: app-token
+        uses: actions/create-github-app-token@v3.2.0
         with:
           client-id: ${{ secrets.gh-app-id }}
           private-key: ${{ secrets.gh-app-private-key }}
           owner: ${{ github.repository_owner }}
 
-      - uses: actions/checkout@v7
+      - name: Check out repository
+        uses: actions/checkout@v7
         with:
           token: ${{ steps.app-token.outputs.token }}
           persist-credentials: false
 
-      # Exported before the action runs so TF_VAR_* values are visible to
-      # init, validate and plan alike.
       - name: Export caller-provided variables
+        shell: bash
         env:
           TF_VARS: ${{ secrets.tf-vars }}
         run: |
@@ -100,30 +68,34 @@ jobs:
             key=${line%%=*}
             value=${line#*=}
             if [ "$key" = "$line" ]; then
-              echo "Ignoring malformed tf-vars entry (expected KEY=VALUE)."
+              echo "Ignoring malformed tf-vars entry; expected KEY=VALUE."
               continue
             fi
             echo "::add-mask::$value"
             echo "$key=$value" >> "$GITHUB_ENV"
           done <<< "$TF_VARS"
 
-      - uses: google-github-actions/auth@v3
-        if: ${{ inputs.workload-identity-provider != '' }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.2.3
         with:
-          workload_identity_provider: ${{ inputs.workload-identity-provider }}
-          service_account: ${{ inputs.service-account }}
+          role-to-assume: ${{ vars.OIDC_ROLE_ARN }}
+          aws-region: eu-north-1
+          role-session-name: GitHubActions-${{ github.run_id }}
 
-      - uses: google-github-actions/setup-gcloud@v3
-        if: ${{ inputs.workload-identity-provider != '' && inputs.setup-gcloud }}
-
-      # Referenced by full path rather than `./`: inside a reusable workflow a
-      # relative `uses:` resolves against the *caller's* checkout, not this repo.
-      # Keep this ref in step with the ref callers pin the workflow to.
-      - uses: datablock-dev/platform-shared/.github/actions/terraform-plan@main
+      - name: Assume target AWS account role
+        uses: aws-actions/configure-aws-credentials@v6.2.3
         with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws-account-id }}:role/OrganizationAccountAccessRole
+          aws-region: eu-north-1
+          role-chaining: true
+          role-skip-session-tagging: true
+
+      # A relative path would resolve against the caller's checkout, so this
+      # action is referenced by its repository path.
+      - name: Terraform plan
+        uses: datablock-dev/platform-shared/.github/actions/terraform-plan@main
+        with:
+          environment: ${{ inputs.environment }}
+          app-token: ${{ steps.app-token.outputs.token }}
           working-directory: ${{ inputs.working-directory }}
-          workspace: ${{ inputs.workspace }}
           terraform-version: ${{ inputs.terraform-version }}
-          github-token: ${{ steps.app-token.outputs.token }}
-          plan-args: ${{ inputs.plan-args }}
-          comment-on-pr: ${{ inputs.comment-on-pr }}
