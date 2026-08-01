@@ -39,7 +39,7 @@ runs:
   using: 'composite'
   steps:
     - name: Comment plan on PR
-      uses: actions/github-script@v7
+      uses: actions/github-script@v9
       env:
         FMT_OUTCOME: ${{ inputs.fmt-outcome }}
         INIT_OUTCOME: ${{ inputs.init-outcome }}
