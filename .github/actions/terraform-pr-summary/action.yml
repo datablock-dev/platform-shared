@@ -30,6 +30,10 @@ inputs:
     description: 'GitHub token used to make API calls'
     required: false
     default: ${{ github.token }}
+  environment:
+    description: 'Environment name to include in the comment heading'
+    required: false
+    default: ''
 
 runs:
   using: 'composite'
@@ -43,12 +47,19 @@ runs:
         VALIDATE_STDOUT: ${{ inputs.validate-stdout }}
         PLAN_OUTCOME: ${{ inputs.plan-outcome }}
         PLAN_STDOUT: ${{ inputs.plan-stdout }}
+        ENVIRONMENT: ${{ inputs.environment }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
-          const marker = '<!-- terraform-ci-results -->';
           const maxLen = 65536;
 
+          const environment = (process.env.ENVIRONMENT || '').replace(/[\r\n]+/g, ' ').trim();
+          const marker = environment
+            ? `<!-- terraform-ci-results:${encodeURIComponent(environment)} -->`
+            : '<!-- terraform-ci-results -->';
+          const heading = environment
+            ? `## Terraform CI results — ${environment}`
+            : '## Terraform CI results';
           const fmtOutcome = process.env.FMT_OUTCOME || 'unknown';
           const initOutcome = process.env.INIT_OUTCOME || 'unknown';
           const validateOutcome = process.env.VALIDATE_OUTCOME || 'unknown';
@@ -61,7 +72,7 @@ runs:
           function buildBody(plan) {
             return [
               marker,
-              '## Terraform CI results',
+              heading,
               '',
               '| Step | Outcome |',
               '| --- | --- |',
