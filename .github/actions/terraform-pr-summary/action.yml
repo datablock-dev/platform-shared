@@ -127,3 +127,21 @@ runs:
               body,
             });
           }
+
+    - name: Fail if fmt, validate, or plan failed
+      if: ${{ always() }}
+      shell: bash
+      env:
+        FMT_OUTCOME: ${{ inputs.fmt-outcome }}
+        VALIDATE_OUTCOME: ${{ inputs.validate-outcome }}
+        PLAN_OUTCOME: ${{ inputs.plan-outcome }}
+      run: |
+        failed=""
+        if [ "$FMT_OUTCOME" = "failure" ]; then failed="$failed fmt"; fi
+        if [ "$VALIDATE_OUTCOME" = "failure" ]; then failed="$failed validate"; fi
+        if [ "$PLAN_OUTCOME" = "failure" ]; then failed="$failed plan"; fi
+        if [ -n "$failed" ]; then
+          echo "The following Terraform step(s) failed:$failed"
+          exit 1
+        fi
+        echo "fmt, validate, and plan all succeeded (or were skipped)."
