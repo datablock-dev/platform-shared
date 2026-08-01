@@ -1,0 +1,132 @@
+name: Terraform Apply
+description: Optionally update Terraform state, then plan and apply changes.
+
+inputs:
+  environment:
+    description: Target environment and Terraform workspace (for example, staging or production).
+    required: true
+  app-token:
+    description: GitHub App token for private module access.
+    required: true
+  state-remove:
+    description: Space-separated resource addresses to remove from Terraform state.
+    required: false
+    default: ""
+  state-import:
+    description: Newline- or space-separated address=id pairs to import into Terraform state.
+    required: false
+    default: ""
+  terraform-version:
+    description: Terraform CLI version.
+    required: false
+    default: 1.10.4
+  working-directory:
+    description: Directory containing the Terraform root module.
+    required: false
+    default: terraform
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Terraform
+      uses: hashicorp/setup-terraform@v4
+      with:
+        terraform_version: ${{ inputs.terraform-version }}
+
+    - name: Set Terraform plugin cache directory
+      shell: bash
+      run: |
+        mkdir -p "$HOME/.terraform.d/plugin-cache"
+        echo "TF_PLUGIN_CACHE_DIR=$HOME/.terraform.d/plugin-cache" >> "$GITHUB_ENV"
+
+    - name: Cache Terraform providers
+      uses: actions/cache@v6
+      with:
+        path: ~/.terraform.d/plugin-cache
+        key: ${{ runner.os }}-terraform-${{ inputs.environment }}-${{ hashFiles(format('{0}/.terraform.lock.hcl', inputs.working-directory)) }}
+
+    - name: Configure git credentials for private Terraform modules
+      shell: bash
+      env:
+        APP_TOKEN: ${{ inputs.app-token }}
+      run: |
+        git_config=$(mktemp)
+        echo "GIT_CONFIG_GLOBAL=$git_config" >> "$GITHUB_ENV"
+        git config --file "$git_config" \
+          url."https://x-access-token:${APP_TOKEN}@github.com/".insteadOf \
+          "https://github.com/"
+
+    - name: Validate environment
+      shell: bash
+      env:
+        ENVIRONMENT: ${{ inputs.environment }}
+      run: |
+        if [[ ! "$ENVIRONMENT" =~ ^[A-Za-z0-9._-]+$ ]]; then
+          echo "Environment must contain only letters, numbers, dots, underscores, and hyphens."
+          exit 1
+        fi
+
+    - name: Terraform format check
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: terraform fmt -check
+
+    - name: Terraform init
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        ENVIRONMENT: ${{ inputs.environment }}
+        TF_VAR_github_token: ${{ inputs.app-token }}
+      run: |
+        terraform init -input=false -reconfigure -backend-config="backend-${ENVIRONMENT}.hcl"
+        terraform workspace select "$ENVIRONMENT" || terraform workspace new "$ENVIRONMENT"
+
+    - name: Terraform validate
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: terraform validate -no-color
+
+    - name: Terraform state remove
+      if: ${{ github.event_name == 'workflow_dispatch' && inputs.state-remove != '' }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        STATE_REMOVE: ${{ inputs.state-remove }}
+      run: |
+        read -r -a resources <<< "$STATE_REMOVE"
+        for resource in "${resources[@]}"; do
+          terraform state rm "$resource"
+        done
+
+    - name: Terraform import
+      if: ${{ github.event_name == 'workflow_dispatch' && inputs.state-import != '' }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        STATE_IMPORT: ${{ inputs.state-import }}
+        TF_VAR_github_token: ${{ inputs.app-token }}
+      run: |
+        while IFS= read -r pair; do
+          [ -z "$pair" ] && continue
+          address=${pair%%=*}
+          id=${pair#*=}
+          if [ "$address" = "$pair" ] || [ -z "$address" ] || [ -z "$id" ]; then
+            echo "Invalid state-import entry '$pair'; expected address=id."
+            exit 1
+          fi
+          terraform import "$address" "$id"
+        done < <(printf '%s\n' "$STATE_IMPORT" | tr '[:space:]' '\n')
+
+    - name: Terraform plan
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        TF_VAR_github_token: ${{ inputs.app-token }}
+      run: terraform plan -input=false -out=tfplan
+
+    - name: Terraform apply
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        TF_VAR_github_token: ${{ inputs.app-token }}
+      run: terraform apply -input=false -auto-approve tfplan
