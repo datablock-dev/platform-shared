@@ -13,6 +13,14 @@ inputs:
     description: Target AWS account ID. AWS authentication is skipped unless this and aws-oidc-role-arn are set.
     required: false
     default: ""
+  gcp-workload-identity-provider:
+    description: GCP workload identity provider resource name. GCP authentication is skipped unless this and gcp-service-account are set.
+    required: false
+    default: ""
+  gcp-service-account:
+    description: GCP service account to impersonate via workload identity federation. GCP authentication is skipped unless this and gcp-workload-identity-provider are set.
+    required: false
+    default: ""
   app-token:
     description: Existing token for private modules when App credentials are not provided.
     required: false
@@ -83,6 +91,13 @@ runs:
         aws-region: eu-north-1
         role-chaining: true
         role-skip-session-tagging: true
+
+    - name: Configure GCP credentials
+      if: ${{ inputs.gcp-workload-identity-provider != '' && inputs.gcp-service-account != '' }}
+      uses: google-github-actions/auth@v3
+      with:
+        workload_identity_provider: ${{ inputs.gcp-workload-identity-provider }}
+        service_account: ${{ inputs.gcp-service-account }}
 
     - name: Set up Terraform
       uses: hashicorp/setup-terraform@v4
