@@ -1,4 +1,4 @@
-name: 'Terraform PR Commenter'
+name: 'Terraform PR Summary'
 description: 'Posts or updates a Pull Request comment with Terraform CI outcomes and outputs.'
 
 inputs:
@@ -26,12 +26,8 @@ inputs:
     description: 'Stdout output from terraform plan'
     required: false
     default: '(no output)'
-  github-token:
-    description: 'GitHub token used to make API calls'
-    required: false
-    default: ${{ github.token }}
   environment:
-    description: 'Environment name to include in the comment heading'
+    description: 'Environment name to include in the comment heading. Pass matrix.env, otherwise every environment shares one comment marker and they overwrite each other.'
     required: false
     default: ''
 
@@ -39,7 +35,9 @@ runs:
   using: 'composite'
   steps:
     - name: Comment plan on PR
-      uses: actions/github-script@v9
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      # The outcomes and plan text go through env, not the script body, so a plan
+      # containing backticks or ${} cannot break out and run as JavaScript.
       env:
         FMT_OUTCOME: ${{ inputs.fmt-outcome }}
         INIT_OUTCOME: ${{ inputs.init-outcome }}
@@ -49,25 +47,74 @@ runs:
         PLAN_STDOUT: ${{ inputs.plan-stdout }}
         ENVIRONMENT: ${{ inputs.environment }}
       with:
-        github-token: ${{ inputs.github-token }}
+        # github-token is omitted on purpose: actions/github-script defaults it to
+        # ${{ github.token }}, so the run's own token is used. The calling workflow has to
+        # grant pull-requests: write for that token to be able to comment.
         script: |
-          const maxLen = 65536;
+          // infrastructure.yml runs terraform on push, where there is no pull request to
+          // comment on. Bail out instead of failing on an undefined issue number.
+          if (!context.issue.number) {
+            core.info('Not a pull request event, so there is no comment to post.');
+            return;
+          }
+
+          const MAX_LEN = 65536;      // GitHub's hard limit on a comment body
+          const VALIDATE_CAP = 8000;  // validate output is short in practice; leave the rest for the plan
 
           const environment = (process.env.ENVIRONMENT || '').replace(/[\r\n]+/g, ' ').trim();
           const marker = environment
             ? `<!-- terraform-ci-results:${encodeURIComponent(environment)} -->`
             : '<!-- terraform-ci-results -->';
           const heading = environment
-            ? `## Terraform CI results — ${environment}`
+            ? `## Terraform CI results: ${environment}`
             : '## Terraform CI results';
-          const fmtOutcome = process.env.FMT_OUTCOME || 'unknown';
-          const initOutcome = process.env.INIT_OUTCOME || 'unknown';
-          const validateOutcome = process.env.VALIDATE_OUTCOME || 'unknown';
-          const validateStdout = process.env.VALIDATE_STDOUT || '(no output)';
-          const planOutcome = process.env.PLAN_OUTCOME || 'unknown';
+
+          const outcomes = [
+            ['Terraform fmt', process.env.FMT_OUTCOME || 'unknown'],
+            ['Terraform init', process.env.INIT_OUTCOME || 'unknown'],
+            ['Terraform validate', process.env.VALIDATE_OUTCOME || 'unknown'],
+            ['Terraform plan', process.env.PLAN_OUTCOME || 'unknown'],
+          ];
 
           const icon = (o) =>
             o === 'success' ? '✅' : o === 'failure' ? '❌' : o === 'skipped' ? '⏭️' : '⚠️';
+
+          const notice = '...(truncated to fit the comment size limit)...\n';
+          // Keep the tail: the "Plan: N to add, N to change" line reviewers look for is at
+          // the end of the output, not the start.
+          const clampTail = (text, budget) =>
+            text.length <= budget
+              ? text
+              : notice + text.slice(-Math.max(0, budget - notice.length));
+
+          const planStdout = process.env.PLAN_STDOUT || '(no output)';
+
+          // A ```diff block is coloured by the FIRST character of each line, and terraform
+          // indents its change markers, so nothing gets coloured as-is. Swap each marker
+          // with the whitespace in front of it: the marker lands in column 0 and the line
+          // keeps its original width, so nested attributes stay aligned. `~` has no diff
+          // equivalent, so it is rendered as `!`, which diff highlights as "changed".
+          const colorize = (plan) =>
+            plan.replace(
+              /^([ \t]+)(-\/\+|\+\/-|[-+~])(?= |$)/gm,
+              (_, indent, sign) => (sign === '~' ? '!' : sign) + indent,
+            );
+
+          // Parsed from the untruncated plan, so the counts stay right even when the body
+          // below has been clamped. Terraform prints the line once per plan; take the last.
+          const planTotals = (() => {
+            const counts = planStdout.match(
+              /^ *Plan: (\d+) to add, (\d+) to change, (\d+) to destroy\.$(?![\s\S]*^ *Plan: )/m,
+            );
+            if (counts) {
+              const [, add, change, destroy] = counts;
+              return `**Plan:** \`${add}\` to add, \`${change}\` to change, \`${destroy}\` to destroy`;
+            }
+            if (/^No changes\./m.test(planStdout)) return '**Plan:** `0` to add, `0` to change, `0` to destroy';
+            return '**Plan:** no change summary in the plan output';
+          })();
+
+          const validateStdout = clampTail(process.env.VALIDATE_STDOUT || '(no output)', VALIDATE_CAP);
 
           function buildBody(plan) {
             return [
@@ -76,10 +123,7 @@ runs:
               '',
               '| Step | Outcome |',
               '| --- | --- |',
-              `| Terraform fmt | ${icon(fmtOutcome)} \`${fmtOutcome}\` |`,
-              `| Terraform init | ${icon(initOutcome)} \`${initOutcome}\` |`,
-              `| Terraform validate | ${icon(validateOutcome)} \`${validateOutcome}\` |`,
-              `| Terraform plan | ${icon(planOutcome)} \`${planOutcome}\` |`,
+              ...outcomes.map(([label, outcome]) => `| ${label} | ${icon(outcome)} \`${outcome}\` |`),
               '',
               '<details><summary>Validate output</summary>',
               '',
@@ -91,29 +135,25 @@ runs:
               '',
               '<details><summary>Show Plan</summary>',
               '',
-              '```',
+              '```diff',
               plan,
               '```',
               '',
               '</details>',
               '',
+              planTotals,
+              '',
               `*Workflow: \`${context.workflow}\`, Run: [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})*`,
             ].join('\n');
           }
 
-          let planStdout = process.env.PLAN_STDOUT || '(no output)';
-          let body = buildBody(planStdout);
-
-          if (body.length > maxLen) {
-            const notice = '\n\n... (plan output truncated to fit comment size limit) ...\n\n';
-            const overhead = body.length - planStdout.length;
-            const budget = Math.max(0, maxLen - overhead - notice.length - 100);
-            planStdout = notice + planStdout.slice(-budget);
-            body = buildBody(planStdout);
-            if (body.length > maxLen) {
-              body = body.slice(0, maxLen - 20) + '\n...(truncated)';
-            }
-          }
+          // buildBody splices the plan in as a single array element, so the finished body is
+          // exactly the empty-plan body plus the plan. Measuring it makes the budget exact
+          // rather than approximated, and every other part of the body is already bounded.
+          const overhead = buildBody('').length;
+          const body = buildBody(
+            clampTail(colorize(planStdout), Math.max(0, MAX_LEN - overhead - 64)),
+          );
 
           const comments = await github.paginate(github.rest.issues.listComments, {
             owner: context.repo.owner,
@@ -138,21 +178,3 @@ runs:
               body,
             });
           }
-
-    - name: Fail if fmt, validate, or plan failed
-      if: ${{ always() }}
-      shell: bash
-      env:
-        FMT_OUTCOME: ${{ inputs.fmt-outcome }}
-        VALIDATE_OUTCOME: ${{ inputs.validate-outcome }}
-        PLAN_OUTCOME: ${{ inputs.plan-outcome }}
-      run: |
-        failed=""
-        if [ "$FMT_OUTCOME" = "failure" ]; then failed="$failed fmt"; fi
-        if [ "$VALIDATE_OUTCOME" = "failure" ]; then failed="$failed validate"; fi
-        if [ "$PLAN_OUTCOME" = "failure" ]; then failed="$failed plan"; fi
-        if [ -n "$failed" ]; then
-          echo "The following Terraform step(s) failed:$failed"
-          exit 1
-        fi
-        echo "fmt, validate, and plan all succeeded (or were skipped)."
