@@ -102,17 +102,42 @@ runs:
 
           // Parsed from the untruncated plan, so the counts stay right even when the body
           // below has been clamped. Terraform prints the line once per plan; take the last.
-          const planTotals = (() => {
+          // An em dash rather than a zero when the plan never got far enough to say — a plan
+          // that failed to run has an unknown number of changes, not none.
+          const planCounts = (() => {
             const counts = planStdout.match(
               /^ *Plan: (\d+) to add, (\d+) to change, (\d+) to destroy\.$(?![\s\S]*^ *Plan: )/m,
             );
-            if (counts) {
-              const [, add, change, destroy] = counts;
-              return `**Plan:** \`${add}\` to add, \`${change}\` to change, \`${destroy}\` to destroy`;
-            }
-            if (/^No changes\./m.test(planStdout)) return '**Plan:** `0` to add, `0` to change, `0` to destroy';
-            return '**Plan:** no change summary in the plan output';
+            if (counts) return { add: counts[1], change: counts[2], destroy: counts[3] };
+            if (/^No changes\./m.test(planStdout)) return { add: '0', change: '0', destroy: '0' };
+            return { add: '—', change: '—', destroy: '—' };
           })();
+
+          // Two markdown tables cannot sit side by side on their own, so an HTML table holds
+          // one in each cell. GitHub only renders markdown inside a block-level tag when a
+          // blank line separates the two, hence the empty strings around each table.
+          const summary = [
+            '<table>',
+            '<tr>',
+            '<td valign="top">',
+            '',
+            '| Step | Outcome |',
+            '| --- | --- |',
+            ...outcomes.map(([label, outcome]) => `| ${label} | ${icon(outcome)} \`${outcome}\` |`),
+            '',
+            '</td>',
+            '<td valign="top">',
+            '',
+            '| Plan | Count |',
+            '| --- | --- |',
+            `| 🟢 Add | \`${planCounts.add}\` |`,
+            `| 🟡 Change | \`${planCounts.change}\` |`,
+            `| 🔴 Destroy | \`${planCounts.destroy}\` |`,
+            '',
+            '</td>',
+            '</tr>',
+            '</table>',
+          ];
 
           const validateStdout = clampTail(process.env.VALIDATE_STDOUT || '(no output)', VALIDATE_CAP);
 
@@ -121,9 +146,7 @@ runs:
               marker,
               heading,
               '',
-              '| Step | Outcome |',
-              '| --- | --- |',
-              ...outcomes.map(([label, outcome]) => `| ${label} | ${icon(outcome)} \`${outcome}\` |`),
+              ...summary,
               '',
               '<details><summary>Validate output</summary>',
               '',
@@ -140,8 +163,6 @@ runs:
               '```',
               '',
               '</details>',
-              '',
-              planTotals,
               '',
               `*Workflow: \`${context.workflow}\`, Run: [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})*`,
             ].join('\n');
