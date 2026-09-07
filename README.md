@@ -128,3 +128,41 @@ jobs:
 The reusable workflow handles checkout and AWS authentication internally. GitHub does not allow a caller to insert arbitrary steps into a called workflow's job, so repositories needing Google authentication or different AWS authentication should use the composite action in a regular job instead.
 
 The reusable workflow additionally accepts `working-directory`, `runs-on`, and `terraform-version`, plus an optional `tf-vars` secret containing newline-separated `KEY=VALUE` entries.
+
+## Prisma actions
+
+Schema validation for repositories whose Prisma schema lives in a workspace package.
+
+- `.github/actions/prisma-schema-summary` checks out the pull request's base branch and writes the SQL that `prisma migrate diff` would apply to the job summary.
+- `.github/workflows/reusable-prisma-validate.yml` owns a whole validate job: checkout, Bun, install, `prisma validate`, client generation, then the summary action.
+
+### Reusable validate workflow
+
+```yaml
+jobs:
+  validate:
+    uses: datablock-dev/platform-shared/.github/workflows/reusable-prisma-validate.yml@main
+    with:
+      working-directory: packages/database
+      schema-path: packages/database/prisma/schema
+      validate-args: --config prisma.config.ts
+      diff-args: --config prisma.config.ts
+```
+
+`working-directory` is the package the Prisma CLI runs in; `schema-path` is repository-relative, because both the sparse checkout and the diff address the schema from `$GITHUB_WORKSPACE`. `validate-args` and `diff-args` are separate: `prisma validate` accepts `--schema`, `prisma migrate diff` does not, and repositories on a `prisma.config.ts` pass `--config` to both.
+
+The workflow additionally accepts `install-directory` (default `.`, for workspace monorepos), `generate-script` (default `generate`), `prisma-command` (default `bun run prisma`), `bun-version`, `runs-on`, and `database-url` — a placeholder connection string the CLI requires but this job never connects to.
+
+### Schema summary action
+
+Repositories that already have a validate job can add the summary step alone:
+
+```yaml
+      - uses: datablock-dev/platform-shared/.github/actions/prisma-schema-summary@main
+        with:
+          working-directory: packages/database
+          schema-path: packages/database/prisma/schema
+          diff-args: --config prisma.config.ts
+```
+
+`base-ref` defaults to `github.base_ref`, which is empty outside a pull request, and the action is a no-op when it is empty — so the step needs no `if` guard of its own. It checks out the base branch into `base/` (override with `base-path`) using a non-cone sparse checkout of `schema-path` only, so the primary checkout does not need `fetch-depth: 0`. When the base branch has no schema directory yet, the step reports that and exits without failing.

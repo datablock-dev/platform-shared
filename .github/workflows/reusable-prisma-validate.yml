@@ -1,0 +1,92 @@
+name: Prisma Validate (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: Directory containing the package that owns the Prisma schema.
+        required: true
+        type: string
+      schema-path:
+        description: Repository-relative path to the Prisma schema directory.
+        required: true
+        type: string
+      install-directory:
+        description: Directory to install dependencies in. Defaults to the repository root for workspace monorepos.
+        required: false
+        type: string
+        default: .
+      generate-script:
+        description: Package script that generates the Prisma client.
+        required: false
+        type: string
+        default: generate
+      validate-args:
+        description: Extra arguments for prisma validate, for example --config prisma.config.ts.
+        required: false
+        type: string
+        default: ""
+      diff-args:
+        description: Extra arguments for prisma migrate diff. Usually the same as validate-args.
+        required: false
+        type: string
+        default: ""
+      prisma-command:
+        description: Command that invokes the Prisma CLI.
+        required: false
+        type: string
+        default: bun run prisma
+      bun-version:
+        description: Bun version to install.
+        required: false
+        type: string
+        default: latest
+      database-url:
+        description: Placeholder connection string. This job never reaches a database; the CLI only requires the variable to be set.
+        required: false
+        type: string
+        default: postgresql://user:pass@localhost:5432/db
+      runs-on:
+        description: Runner label for the validate job.
+        required: false
+        type: string
+        default: arc-runner-set
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate schema
+    runs-on: ${{ inputs.runs-on }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    env:
+      DATABASE_URL: ${{ inputs.database-url }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ inputs.bun-version }}
+
+      - name: Install dependencies
+        run: bun install
+        working-directory: ${{ inputs.install-directory }}
+
+      - name: Validate schema
+        run: ${{ inputs.prisma-command }} validate ${{ inputs.validate-args }}
+
+      - name: Generate client
+        run: bun run ${{ inputs.generate-script }}
+
+      # A relative path would resolve against the caller's checkout, so this
+      # action is referenced by its repository path.
+      - name: Summarise schema changes
+        uses: datablock-dev/platform-shared/.github/actions/prisma-schema-summary@main
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          schema-path: ${{ inputs.schema-path }}
+          prisma-command: ${{ inputs.prisma-command }}
+          diff-args: ${{ inputs.diff-args }}

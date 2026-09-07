@@ -1,0 +1,94 @@
+name: Prisma Schema Summary
+description: Diff a pull request's Prisma schema against its base branch and write the resulting SQL to the job summary.
+
+inputs:
+  working-directory:
+    description: Directory the Prisma CLI runs in, containing the package that owns the schema.
+    required: true
+  schema-path:
+    description: Repository-relative path to the Prisma schema directory, for example packages/database/prisma/schema.
+    required: true
+  base-ref:
+    description: Branch to diff against. Empty makes the action a no-op, so it is safe to leave in place outside pull requests.
+    required: false
+    default: ${{ github.base_ref }}
+  base-path:
+    description: Workspace-relative directory the base branch is checked out into.
+    required: false
+    default: base
+  prisma-command:
+    description: Command that invokes the Prisma CLI.
+    required: false
+    default: bun run prisma
+  diff-args:
+    description: Extra arguments for prisma migrate diff, for example --config prisma.config.ts.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # checkout resolves `path` against $GITHUB_WORKSPACE and ignores
+    # working-directory, so the base tree always lands in a known place.
+    - name: Check out base schema
+      if: inputs.base-ref != ''
+      uses: actions/checkout@v7
+      with:
+        ref: ${{ inputs.base-ref }}
+        path: ${{ inputs.base-path }}
+        sparse-checkout: ${{ inputs.schema-path }}
+        sparse-checkout-cone-mode: false
+
+    - name: Summarise schema changes
+      if: inputs.base-ref != ''
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        BASE_SCHEMA: ${{ inputs.base-path }}/${{ inputs.schema-path }}
+        SCHEMA_PATH: ${{ inputs.schema-path }}
+        PRISMA_COMMAND: ${{ inputs.prisma-command }}
+        DIFF_ARGS: ${{ inputs.diff-args }}
+      run: |
+        # Both schema paths are absolute. A composite action does not inherit
+        # the caller's defaults.run.working-directory, and this step sets its
+        # own, so a workspace-relative path would resolve against the wrong
+        # directory and silently diff an empty tree.
+        base_schema="$GITHUB_WORKSPACE/$BASE_SCHEMA"
+        [ -d "$base_schema" ] || { echo "No base schema to diff against"; exit 0; }
+
+        # Failing loudly matters more than it looks. This step used to swallow
+        # the exit code, so when Prisma 7 renamed --from-schema-datamodel the
+        # command started erroring and its *error text* was pasted into the
+        # summary under "the following SQL" — a green check over a review gate
+        # that had silently stopped working.
+        #
+        # PRISMA_COMMAND and DIFF_ARGS are deliberately unquoted: both are
+        # multi-word inputs that have to split into separate argv entries.
+        if ! diff_output=$($PRISMA_COMMAND migrate diff \
+          $DIFF_ARGS \
+          --from-schema "$base_schema" \
+          --to-schema "$GITHUB_WORKSPACE/$SCHEMA_PATH" \
+          --script 2>&1); then
+          echo "::error::prisma migrate diff failed — the schema summary below cannot be trusted"
+          echo "$diff_output"
+          exit 1
+        fi
+
+        # Prisma's own preamble is not SQL and the block below says it is.
+        # sed rather than grep -v: these steps run under `bash -e`, and a grep
+        # that filters every line exits 1 and would abort the step.
+        diff_output=$(printf '%s\n' "$diff_output" | sed '/^Loaded Prisma config/d')
+
+        # --script emits the real SQL rather than a prose summary, which is
+        # what the heading below promises; its no-op form is this marker.
+        if [ -z "$diff_output" ] || echo "$diff_output" | grep -q "This is an empty migration"; then
+          echo "### Prisma Schema — No Changes" >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "### Prisma Schema Changes" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "The following SQL will be applied on merge:" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```sql' >> "$GITHUB_STEP_SUMMARY"
+          echo "$diff_output" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+        fi
