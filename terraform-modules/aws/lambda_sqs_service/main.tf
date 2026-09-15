@@ -3,6 +3,10 @@ locals {
   sqs_queue_name       = coalesce(var.sqs_queue_name, "${terraform.workspace}-${var.service_name}-sqs-queue${local.fifo_suffix}")
   iam_role_name        = coalesce(var.iam_role_name, "${terraform.workspace}-${var.service_name}-lambda-role")
   lambda_function_name = coalesce(var.lambda_function_name, "${terraform.workspace}-${var.service_name}-lambda")
+
+  sqs_tags      = merge({ Name = local.sqs_queue_name }, var.tags, var.sqs_tags)
+  iam_role_tags = merge({ Name = local.iam_role_name }, var.tags, var.iam_role_tags)
+  lambda_tags   = merge({ Name = local.lambda_function_name }, var.tags, var.lambda_tags)
 }
 
 resource "aws_sqs_queue" "service_queue" {
@@ -18,6 +22,8 @@ resource "aws_sqs_queue" "service_queue" {
     deadLetterTargetArn = var.dead_letter_queue_arn
     maxReceiveCount     = var.max_receive_count
   })
+
+  tags = local.sqs_tags
 }
 
 resource "aws_sqs_queue_policy" "service_queue_policy" {
@@ -50,6 +56,8 @@ resource "aws_iam_role" "lambda_role" {
       Action = "sts:AssumeRole"
     }]
   })
+
+  tags = local.iam_role_tags
 }
 
 resource "aws_iam_role_policy" "lambda_policy" {
@@ -118,6 +126,8 @@ resource "aws_lambda_function" "lambda" {
   environment {
     variables = var.env_variables
   }
+
+  tags = local.lambda_tags
 
   # Real code is deployed out-of-band by CI (aws lambda update-function-code) after apply.
   # Ignore drift on the placeholder zip so subsequent applies don't revert deployed code.

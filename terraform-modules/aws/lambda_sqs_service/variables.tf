@@ -80,3 +80,27 @@ variable "iam_role_name" {
   default     = null
   type        = string
 }
+
+variable "tags" {
+  description = "Tags applied to the queue, the Lambda and its IAM role. Merged over the provider's default_tags."
+  default     = {}
+  type        = map(string)
+}
+
+variable "sqs_tags" {
+  description = "Tags applied only to the SQS queue. Overrides keys in tags, including the default Name."
+  default     = {}
+  type        = map(string)
+}
+
+variable "lambda_tags" {
+  description = "Tags applied only to the Lambda function. Overrides keys in tags, including the default Name."
+  default     = {}
+  type        = map(string)
+}
+
+variable "iam_role_tags" {
+  description = "Tags applied only to the Lambda IAM role. Overrides keys in tags, including the default Name."
+  default     = {}
+  type        = map(string)
+}

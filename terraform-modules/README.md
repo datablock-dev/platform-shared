@@ -275,6 +275,13 @@ module "worker" {
 | `lambda_function_name` | `string` | `null` | Override the Lambda function name (defaults to `{workspace}-{service_name}-lambda`) — set this if a caller's CI/CD targets a fixed function name |
 | `sqs_queue_name` | `string` | `null` | Override the SQS queue name (defaults to `{workspace}-{service_name}-sqs-queue`) |
 | `iam_role_name` | `string` | `null` | Override the Lambda IAM role name (defaults to `{workspace}-{service_name}-lambda-role`) |
+| `tags` | `map(string)` | `{}` | Tags for the queue, the Lambda and its role, on top of the provider's `default_tags` |
+| `sqs_tags` | `map(string)` | `{}` | Tags for the queue only; override `tags` |
+| `lambda_tags` | `map(string)` | `{}` | Tags for the Lambda only; override `tags` |
+| `iam_role_tags` | `map(string)` | `{}` | Tags for the IAM role only; override `tags` |
+
+Each resource gets a `Name` tag set to its own name. Pass `Name` in any of the
+tag maps to override it.
 
 The Lambda is deployed with a placeholder zip; real code is expected to be
 pushed out-of-band (e.g. `aws lambda update-function-code` from CI) after
