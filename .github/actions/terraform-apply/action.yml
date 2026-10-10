@@ -41,6 +41,10 @@ inputs:
     description: Newline- or space-separated address=id pairs to import into Terraform state.
     required: false
     default: ""
+  state-untaint:
+    description: Space-separated resource addresses to untaint in Terraform state.
+    required: false
+    default: ""
   terraform-version:
     description: Terraform CLI version.
     required: false
@@ -167,6 +171,21 @@ runs:
         read -r -a resources <<< "$STATE_REMOVE"
         for resource in "${resources[@]}"; do
           terraform state rm "$resource"
+        done
+
+    # For a create the provider reported as failed although the object exists.
+    # Untainting keeps it, and anything returned only at create (a secret),
+    # where a remove + import would lose that value.
+    - name: Terraform untaint
+      if: ${{ github.event_name == 'workflow_dispatch' && inputs.state-untaint != '' }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        STATE_UNTAINT: ${{ inputs.state-untaint }}
+      run: |
+        read -r -a resources <<< "$STATE_UNTAINT"
+        for resource in "${resources[@]}"; do
+          terraform untaint "$resource"
         done
 
     - name: Terraform import
