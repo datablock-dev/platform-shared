@@ -82,6 +82,10 @@ on:
         description: Optional address=id pairs to import
         required: false
         type: string
+      state-untaint:
+        description: Optional space-separated resource addresses to untaint
+        required: false
+        type: string
 
 jobs:
   apply:
@@ -101,9 +105,10 @@ jobs:
           app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
           state-remove: ${{ inputs.state-remove }}
           state-import: ${{ inputs.state-import }}
+          state-untaint: ${{ inputs.state-untaint }}
 ```
 
-State operations only run for `workflow_dispatch` events. `state-remove` accepts whitespace-separated resource addresses. `state-import` accepts whitespace-separated `address=id` pairs; IDs containing whitespace are not supported by this input format.
+State operations only run for `workflow_dispatch` events. `state-remove` accepts whitespace-separated resource addresses. `state-import` accepts whitespace-separated `address=id` pairs; IDs containing whitespace are not supported by this input format. `state-untaint` accepts whitespace-separated resource addresses; use it when a create succeeded but the provider reported an error, so the object and any create-only values (such as a secret) stay in state.
 
 ### Reusable AWS plan workflow
 
